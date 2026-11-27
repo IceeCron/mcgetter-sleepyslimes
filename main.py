@@ -35,9 +35,9 @@ from .script.json_operate import (
     update_data,
 )
 
-# 数据目录名沿用旧插件 "astrbot_mcgetter"：
-# 换装本插件后，旧插件按群保存的服务器配置与柱状图历史可无缝继承。
-DATA_DIR_NAME = "astrbot_mcgetter"
+# 数据目录名：使用本插件自己的独立目录，与旧插件（astrbot_mcgetter）完全隔离，
+# 不读取、不继承旧数据，安装后从头添加服务器即可。
+DATA_DIR_NAME = "mcgetter_sleepyslimes"
 
 HELP_INFO = """
 mchelp
@@ -67,7 +67,7 @@ mchelp
 """
 
 
-@register("mcgetter-sleepyslimes", "IceeCron", "Minecraft 服务器状态查询插件（自用版）：多服务器管理、实时状态图片、在线人数柱状图，玩家列表自动过滤 carpet 假玩家", "1.0.0")
+@register("mcgetter_sleepyslimes", "IceeCron", "Minecraft 服务器状态查询插件（自用版）：多服务器管理、实时状态图片、在线人数柱状图，玩家列表自动过滤 carpet 假玩家", "1.0.0")
 class McGetterPlugin(Star):
     """Minecraft 服务器信息查询插件（mcgetter-sleepyslimes 自用版）。"""
 

@@ -1,14 +1,11 @@
-"""JSON 配置读写模块。
+"""JSON 配置读写模块（精简版）。
 
 本模块负责按群组管理服务器配置与在线人数柱状图历史数据：
 
 - 每个群组一个 JSON 文件，文件名为群号；
-- 服务器以自增数字 ID 为键，删除后不复用（显式 /mcdel 造成的缺口是预期行为）；
-- 版本迁移：
-    * 旧版“以服务器名称为键”的格式 → 自动迁移为 ID 键格式；
-    * 版本号低于 3.0 的配置 → 一次性压缩服务器 ID（1,2,11,15 → 1,2,3,4），
-      修复历史版本“自动清理删服后留下空洞序号”造成的面板序号不连续问题，
-      柱状图历史数据会随 ID 同步迁移。
+- 服务器以自增数字 ID 为键，删除后不复用（手动 /mcdel 造成的缺口是预期行为）；
+- 本插件使用独立数据目录，从头开始积累数据，不读取、不迁移旧插件数据；
+- 数据文件为空或解析失败时自动备份并重建默认配置（自愈）。
 
 维护者: IceeCron (https://github.com/IceeCron)
 """
@@ -24,8 +21,7 @@ import aiofiles
 
 from astrbot.api import logger
 
-# 当前配置格式版本：3.0
-# v3.0: 移除自动清理功能及其状态字段；首次读取旧版配置时压缩服务器 ID。
+# 当前配置格式版本
 CURRENT_VERSION = "3.0"
 
 DEFAULT_CONFIG = {
@@ -38,109 +34,6 @@ DEFAULT_CONFIG = {
 
 # 柱状图历史最大保留条数（对应 /mcdata 允许的最大小时数 168）
 MAX_HISTORY_POINTS = 168
-
-# 旧版配置中随自动清理功能一并移除的字段
-_LEGACY_SERVER_FIELDS = ("created_time", "last_success_time", "last_failed_time", "failed_count")
-
-
-def is_old_format(data: Dict[str, Any]) -> bool:
-    """检查是否为最旧版格式（直接以服务器名称为键）。"""
-    if not data or not isinstance(data, dict):
-        return False
-    if "version" in data:
-        return False
-    for value in data.values():
-        if isinstance(value, dict) and "name" in value and "host" in value:
-            return True
-    return False
-
-
-def migrate_old_format(data: Dict[str, Any]) -> Dict[str, Any]:
-    """将“以服务器名称为键”的最旧格式迁移为 ID 键格式。"""
-    logger.info("检测到旧版配置格式，开始自动迁移...")
-    new_data = copy.deepcopy(DEFAULT_CONFIG)
-    next_id = 1
-    for server_info in data.values():
-        if isinstance(server_info, dict) and "name" in server_info and "host" in server_info:
-            new_data["servers"][str(next_id)] = {
-                "id": next_id,
-                "name": server_info["name"],
-                "host": server_info["host"],
-            }
-            next_id += 1
-    new_data["next_id"] = next_id
-    logger.info(f"迁移完成，共迁移 {len(data)} 个服务器配置")
-    return new_data
-
-
-def _compact_server_ids(data: Dict[str, Any]) -> Dict[str, Any]:
-    """一次性压缩服务器 ID：按当前 ID 升序重排为 1..N，并同步迁移柱状图历史键。
-
-    用于修复历史版本“自动清理删服后 ID 保留占位”造成的序号空洞
-    （例如 1,2,11,15,16 → 1,2,3,4,5），同时清理由自动清理引入的遗留字段。
-    """
-    servers = data.get("servers") or {}
-    if not servers:
-        data["version"] = CURRENT_VERSION
-        data["next_id"] = 1
-        data.pop("last_cleanup", None)
-        return data
-
-    def sort_key(item: Tuple[str, Dict[str, Any]]) -> Tuple[int, int]:
-        key = item[0]
-        try:
-            return (0, int(key))
-        except (TypeError, ValueError):
-            # 非数字键放到最后，保持原有顺序
-            return (1, 0)
-
-    ordered = sorted(servers.items(), key=sort_key)
-
-    id_map: Dict[str, str] = {}
-    new_servers: Dict[str, Dict[str, Any]] = {}
-    new_id = 1
-    for old_key, server_info in ordered:
-        new_key = str(new_id)
-        id_map[str(old_key)] = new_key
-        new_info = dict(server_info)
-        new_info["id"] = new_id
-        # 清理自动清理功能遗留的状态字段
-        for field in _LEGACY_SERVER_FIELDS:
-            new_info.pop(field, None)
-        new_servers[new_key] = new_info
-        new_id += 1
-
-    data["servers"] = new_servers
-    data["next_id"] = new_id
-
-    # 同步迁移柱状图历史数据键，并清理已删除服务器的孤儿趋势数据
-    trends = data.get("trends") or {}
-    new_trends: Dict[str, Dict[str, Any]] = {}
-    if trends:
-        for old_sid, trend_obj in trends.items():
-            new_sid = id_map.get(str(old_sid), str(old_sid))
-            # 迁移后仍不存在的服务器 → 其趋势数据为孤儿，直接丢弃
-            if new_sid not in new_servers:
-                continue
-            history = list((trend_obj or {}).get("history", []))
-            if new_sid in new_trends:
-                existing = new_trends[new_sid].get("history", [])
-                merged = {int(h.get("ts", 0)): int(h.get("count", 0)) for h in existing}
-                for h in history:
-                    ts = int(h.get("ts", 0))
-                    merged[ts] = int(h.get("count", 0))
-                merged_history = [{"ts": ts, "count": cnt} for ts, cnt in sorted(merged.items())]
-                if len(merged_history) > MAX_HISTORY_POINTS:
-                    merged_history = merged_history[-MAX_HISTORY_POINTS:]
-                new_trends[new_sid] = {"history": merged_history}
-            else:
-                new_trends[new_sid] = {"history": history}
-    data["trends"] = new_trends
-
-    data["version"] = CURRENT_VERSION
-    data.pop("last_cleanup", None)
-    logger.info(f"配置已升级到 v{CURRENT_VERSION}：服务器 ID 已压缩为 1..{new_id - 1}")
-    return data
 
 
 # ---------------------------------------------------------------------------
@@ -211,11 +104,10 @@ async def _backup_corrupt_file(json_path: str, suffix: str = "corrupt") -> None:
 
 
 async def read_json(json_path: str) -> Dict[str, Any]:
-    """异步读取 JSON 文件内容，自动完成格式自愈与版本迁移。
+    """异步读取 JSON 文件内容，自动完成格式自愈。
 
     - 文件不存在 / 为空 / 解析失败 → 备份后重建默认配置；
-    - 最旧“名称键”格式 → 自动迁移；
-    - 版本低于 3.0 → 自动压缩服务器 ID 并写回。
+    - 读取后补全缺失的结构键（version / next_id / servers / trends）。
     """
     try:
         path = Path(json_path)
@@ -243,26 +135,18 @@ async def read_json(json_path: str) -> Dict[str, Any]:
 
         logger.debug(f"读取到的JSON内容（{len(content)} 字节）")
         data = json.loads(content)
-
-        # 最旧格式（名称键）→ 迁移为 ID 键格式
-        if is_old_format(data):
-            data = migrate_old_format(data)
-            await write_json(json_path, data)
+        if not isinstance(data, dict):
+            raise ValueError("JSON 顶层结构不是对象")
 
         # 确保数据结构键齐全
         if "version" not in data:
-            data["version"] = "0"
+            data["version"] = CURRENT_VERSION
         if "next_id" not in data:
             data["next_id"] = 1
         if "servers" not in data or not isinstance(data.get("servers"), dict):
             data["servers"] = {}
         if "trends" not in data or not isinstance(data.get("trends"), dict):
             data["trends"] = {}
-
-        # 版本低于 3.0 → 压缩服务器 ID 并清理自动清理遗留字段
-        if str(data.get("version")) != CURRENT_VERSION:
-            data = _compact_server_ids(data)
-            await write_json(json_path, data)
 
         try:
             servers_cnt = len(data.get("servers", {}))

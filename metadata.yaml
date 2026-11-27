@@ -1,5 +1,5 @@
-name: mcgetter-sleepyslimes # 这是你的插件的唯一识别名。
+name: mcgetter_sleepyslimes
 desc: Minecraft 服务器状态查询插件（mcgetter-sleepyslimes 自用版）：多服务器管理、实时状态图片、在线人数柱状图，玩家列表自动过滤 carpet 假玩家（如 Anonymous Player）
-version: v1.0.0 # 插件版本号。格式：v1.1.1 或者 v1.1
-author: IceeCron # 作者
-repo: https://github.com/IceeCron/mcgetter-sleepyslimes # 插件的仓库地址
+version: v1.0.0
+author: IceeCron
+repo: https://github.com/IceeCron/mcgetter-sleepyslimes
